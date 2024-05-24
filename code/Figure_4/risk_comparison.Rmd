@@ -1,0 +1,1044 @@
+---
+title: "Risk Prediction Comparison"
+output: html_notebook
+---
+
+```{r, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(fs)
+library(ggsurvfit)
+library(survival)
+library(survRM2)
+library(gghighlight)
+library(survminer)
+library(ggbreak) 
+library(gridExtra)
+library(ggpmisc)
+library(here)
+library(DT)
+```
+
+
+## Load the Risk models and xCures data
+```{r, warning=FALSE, echo=FALSE,results='hide'}
+# Load xCures CARIS CSV files
+data_files <- fs::dir_ls(here("../XCures-SNO/data/Caris_CSVs_for_ISB_analysis"),recurse = T,regexp = ".csv")
+
+# reformat files into a table
+complete_data_files <- data.frame(path= data_files,row.names = NULL) |>
+  separate(path, into=c("d1","d2","d3","d4","patient_id"), sep = "/", remove = F) |>
+  separate(patient_id, into=c("patient_id","case_id","date"), sep = "_", remove = F)
+
+# read and collate program activities for LGG cohort
+xcures_caris <- map_dfr(complete_data_files$path, read_csv) 
+
+# Get IDH Status 
+xcures_idh <- xcures_caris |>
+  #filter(Technology == "Exome") |>
+  dplyr::select(`Accession Number`, Biomarker, `Test Result`, Technology) |>
+  filter(Biomarker %in% c("IDH1")) |>
+  filter(Technology %in% c("NGS Q3","Exome"))|>
+  mutate(TestResult = if_else(`Test Result` %in% c(grep("^(W|w)ild",`Test Result`, value=TRUE, perl=TRUE)), "Wild Type", `Test Result`)) |>
+  unique()
+
+datatable(xcures_idh,caption = "xCures IDH Status", filter = "top")
+
+# Get MGMT Promoter MEmtylation Status
+xcures_mgmt <- xcures_caris |>
+  dplyr::select(`Accession Number`, Biomarker, Test,`Test Result`, Technology) |>
+  filter(Biomarker %in% c("MGMT")) |>
+  filter(Test == "MGMT-Me") |>
+  unique() |>
+  dplyr::select("Accession Number", `Test Result`) |>
+  dplyr::rename("TestResult_MGMT" = "Test Result")
+
+datatable(xcures_mgmt,caption = "xCures MGMT Status", filter = "top")
+
+# Load risk prediction results for xCures new analysis
+gene_model_x <- read_csv(here("data/risk_prediction/gene_model_km_raw_data_xcure_10_2_2023.csv")) |>
+  mutate(type = "gene_model")
+
+# Regulon model for xCures
+regulon_model_x <- read_csv(here("data/risk_prediction/regulon_model_km_raw_data_xcure_10_2_2023.csv")) |>
+  mutate(type = "regulon_model")
+
+# Program Model for xCures
+program_model_x <- read_csv(here("data/risk_prediction/program_model_km_raw_data_xcure_10_2_2023.csv")) |>
+  mutate(type = "program_model")
+
+# Gene panel for xCures
+gene_panel_x <- read_csv(here("data/risk_prediction/gene_panel_km_raw_data_xcure_10_2_2023.csv")) |>
+  mutate(type = "gene_panel")|>
+  dplyr::rename("Patient_ID" = "...1")
+
+# Load risk prediction results
+gene_model <- read_csv(here("data/risk_prediction/gene_model_km_raw_data.csv")) |>
+  mutate(type = "gene_model") |>
+  filter(dataset != "xCures") |>
+  bind_rows(gene_model_x) |> 
+  left_join(xcures_idh, by=c("Patient_ID" = "Accession Number")) |>
+  left_join(xcures_mgmt, by=c("Patient_ID" = "Accession Number"))
+  
+# Regulon model
+regulon_model <- read_csv(here("data/risk_prediction/regulon_model_km_raw_data.csv")) |>
+  mutate(type = "regulon_model")|>
+  filter(dataset != "xCures") |>
+  bind_rows(regulon_model_x) |>
+  left_join(xcures_idh, by=c("Patient_ID" = "Accession Number")) |>
+  left_join(xcures_mgmt, by=c("Patient_ID" = "Accession Number"))
+
+# Program model
+program_model <- read_csv(here("data/risk_prediction/program_model_km_raw_data.csv")) |>
+  mutate(type = "program_model")|>
+  filter(dataset != "xCures") |>
+  bind_rows(program_model_x) |>
+  left_join(xcures_idh, by=c("Patient_ID" = "Accession Number")) |>
+  left_join(xcures_mgmt, by=c("Patient_ID" = "Accession Number"))
+
+datatable(program_model,caption = "Program Model", filter = "top")
+
+# Gene panel
+gene_panel <- read_csv(here("data/risk_prediction/gene_panel_km_raw_data.csv")) |>
+  mutate(type = "gene_panel")|>
+  filter(dataset != "xCures") |>
+  bind_rows(gene_panel_x) |>
+  left_join(xcures_idh, by=c("Patient_ID" = "Accession Number")) |>
+  left_join(xcures_mgmt, by=c("Patient_ID" = "Accession Number"))
+```
+
+## Load TCGA Data 
+```{r, warning=FALSE,echo=FALSE,results='hide'}
+# Load TCGA new subtypes
+tcga_subtypes <- read_csv(here("data/Zakharova_etal_Glioma_reclassification.csv")) |>
+  mutate(dataset = "TCGA")
+datatable(tcga_subtypes, caption="New TCGA Subtypes", filter = "top")
+
+# TCGA survival IDH wt vs IDH mutant
+tcga_surv <- read_csv(here("../GBM-Model-052022/guanSurvivalDf_TCGA_GBM.csv"))
+cat("\n")
+cat(sep="", "### TCGA Survival Info")
+datatable(tcga_surv, caption="TCGA Survival Info", filter = "top")
+
+# combine new annotations with program model survival
+program_model_tcga <- program_model |>
+  filter(dataset == "TCGA") |>
+  left_join(tcga_subtypes, by=c("Patient_ID" = "Case_ID")) |>
+  mutate(WHO_CNS5_diagnosis = gsub(",", "\n", WHO_CNS5_diagnosis)) |>
+  mutate(`IDH status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+  mutate(WHO_CNS5_diagnosis = if_else(WHO_CNS5_diagnosis == "NA. Grade NA.", NA, WHO_CNS5_diagnosis))
+datatable(program_model_tcga, caption="TCGA Risk Prediction Program Model", filter = "top")
+
+# combine new annotations with program model survival
+regulon_model_tcga <- regulon_model |>
+  filter(dataset == "TCGA") |>
+  left_join(tcga_subtypes, by=c("Patient_ID" = "Case_ID")) |>
+  mutate(WHO_CNS5_diagnosis = gsub(",", "\n", WHO_CNS5_diagnosis)) |>
+  mutate(`IDH status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+  mutate(WHO_CNS5_diagnosis = if_else(WHO_CNS5_diagnosis == "NA. Grade NA.", NA, WHO_CNS5_diagnosis))
+
+tcga_all <- tcga_surv |>
+  left_join(tcga_subtypes, by=c("Patient_ID" = "Case_ID")) |>
+  mutate(WHO_CNS5_diagnosis = gsub(",", "\n", WHO_CNS5_diagnosis)) |>
+  mutate(WHO_CNS5_diagnosis = if_else(WHO_CNS5_diagnosis == "NA. Grade NA.", NA, WHO_CNS5_diagnosis)) |>
+  mutate(`IDH status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+  dplyr::rename("IDHStatus" = "IDH status") |>
+  #dplyr::filter(IDHStatus != "unknown") |>
+  mutate(observed_risk = if_else(duration > 500, "Low", "High")) |>
+  arrange(duration)
+
+tcga_raw_counts <- tcga_all |>
+  dplyr::select(Patient_ID, `IDHStatus`) |>
+  group_by(`IDHStatus`) |>
+  mutate(`IDHStatus` = if_else(`IDHStatus` == "WT (maf)", "WT", `IDHStatus`)) |>
+  summarise(count=n()) |>
+  ungroup() |>
+  #group_by(`IDHStatus`) |>
+  mutate(total = sum(count)) |>
+  mutate(percent = round((count/total)*100, digits = 2))
+
+datatable(tcga_raw_counts, caption="TCGA IDH Status count", filter = "top")
+```
+
+
+### Comparison of IDH status vs SYGNAL prediction of risk
+- Assign observed risk based on the patient survival (e.g Low risk > 500 days)
+- Compare Sygnal risk label and IDH status based risk label to "observed risk"
+- Select patients in the tail of the distribution (*IDH WT* and *observed_risk* = "Low"
+```{r, warning=FALSE,echo=FALSE, results='hide'}
+# From Program model 
+merged1 <- program_model_tcga |>
+      select(Patient_ID, duration, observed, riskLabel, `IDH status`, `MGMT promoter status`, WHO_CNS5_diagnosis) |>
+      mutate(`IDH status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+      mutate(observed_risk = if_else(duration > 500, "Low", "High")) |>
+      arrange(duration) |>
+      mutate(correct_count_sygnal = if_else(riskLabel == observed_risk, TRUE, FALSE)) |>
+      mutate(correct_count_idhstatus = case_when(`IDH status` == "WT" & observed_risk == "High" ~ TRUE,
+                                                 `IDH status` == "Mutant" & observed_risk == "Low" ~ TRUE,
+                                                 `IDH status` == "unknown"  ~ NA,
+                                                 .default = FALSE))
+
+
+  # distribution of patient survival
+ pp1 <- ggplot(merged1, aes(x=duration, fill=duration)) +
+      geom_histogram(bins=30)
+ pp1
+ 
+ # Comparison of SYGNAL (rows) vs IDH Status (Columns)
+ pp2 <- ggplot(merged1, aes(x=factor(Patient_ID, levels=Patient_ID), y=duration, fill=observed_risk)) +
+   geom_bar(stat="identity") +
+   coord_flip() +
+   facet_grid(correct_count_sygnal ~ correct_count_idhstatus,  scales = "fixed") +
+   #geom_text(x = 2000, y = 35, aes(label = label), data = labels,hjust = 0) +
+   #facet_grid(`IDH status` ~ .,  scales = "fixed") +
+   theme(axis.text.y = element_blank()) +
+   labs()
+ pp2  
+```
+
+### Count for *IDH WT* and observed_risk *Low*
+```{r, warning=FALSE, echo=FALSE, results='asis'}
+# count total matches for IDH WT and Observed low risk
+tail_patients_program <- merged1 |>
+  filter(`IDH status` == "WT" & observed_risk == "Low")
+
+# Count Tail patients
+match_counts <- tail_patients_program |>
+  select(Patient_ID, observed_risk, correct_count_sygnal, correct_count_idhstatus) |>
+  group_by(correct_count_sygnal, correct_count_idhstatus) |>
+  summarise(count=n())
+
+datatable(match_counts, caption="Predicted vs Oberved Count", filter = "top")
+  
+percent_correct <- match_counts |>
+  filter(correct_count_sygnal == TRUE & correct_count_idhstatus == FALSE) |>
+  mutate(percent_correct = round((count/sum(match_counts$count)*100), digits = 2)) |>
+  pull(percent_correct)
+
+cat("\n\n")
+cat(percent_correct, "% of the *IDH WT* patients with observed *Low risk* were correctly predicted as low risk by *SYGNAL*", sep = "")
+cat("\n\n")
+```
+## Plotting the tail patients
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+cat("\n")
+tcga_raw_idh <- survfit2(Surv(duration, observed) ~ IDHStatus, data = tcga_all) |>
+  ggsurvfit(linewidth = 1) +
+  add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  annotate(geom="table", label=list(tcga_raw_counts), x=max(tcga_all$duration), y=1) +
+  scale_color_manual(labels=c("IDHmut","IDHwt","Unknown"), values=c("#4575b4","#d73027","#DDDDDD")) +
+  add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+  labs(title="TCGA | IDH Status", x="Time (days)") +
+  geom_rect(xmin=500, xmax=max(tcga_all$duration), ymin=0, ymax=0.5, fill=NA, color="green")
+cat("\n")
+tcga_raw_idh
+cat("\n")
+```
+
+### Survival Counts Function
+```{r, warning=FALSE, echo=FALSE, results='hide', include=FALSE}
+ ## Function to draw 
+  survival_counts <- function(input_df, type){
+    # Get counts of IDH distribution
+    if(type == "IDH"){
+      pm_counts_tcga <- input_df |>
+        select(Patient_ID, riskLabel, `IDH status`) |>
+        group_by(riskLabel,`IDH status`) |>
+        mutate(`IDH status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+        summarise(count=n()) |>
+        ungroup() |>
+        group_by(riskLabel) |>
+        mutate(total = sum(count)) |>
+        mutate(percent = round((count/total)*100, digits = 2))
+      
+      highrisk_label_tcga <- paste0("IDHwt: %",
+                                    pm_counts_tcga |> 
+                                      filter(riskLabel=="High" & `IDH status` == "WT") |> 
+                                      pull(percent),
+                                    "\n IDHmut: %",
+                                    pm_counts_tcga |> 
+                                      filter(riskLabel=="High" & `IDH status` == "Mutant") |> 
+                                      pull(percent),
+                                    "\n Unknown: %",
+                                    pm_counts_tcga |> 
+                                      filter(riskLabel=="High" & `IDH status` == "unknown") |> 
+                                      pull(percent)
+      )
+      
+      lowrisk_label_tcga <- paste0("IDHwt: %",
+                                   pm_counts_tcga |> 
+                                     filter(riskLabel=="Low" & `IDH status` == "WT") |> 
+                                     pull(percent),
+                                   "\n IDHmut: %",
+                                   pm_counts_tcga |> 
+                                     filter(riskLabel=="Low" & `IDH status` == "Mutant") |> 
+                                     pull(percent),
+                                   "\n Unknown: %",
+                                   pm_counts_tcga |> 
+                                     filter(riskLabel=="Low" & `IDH status` == "unknown") |> 
+                                     pull(percent)
+      )
+    }
+    
+    if(type == "MGMT"){
+      pm_counts_tcga <- input_df |>
+        select(Patient_ID, riskLabel, `MGMT promoter status`) |>
+        group_by(riskLabel,`MGMT promoter status`) |>
+       # mutate(`MGMT promoter status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+        summarise(count=n()) |>
+        ungroup() |>
+        group_by(riskLabel) |>
+        mutate(total = sum(count)) |>
+        mutate(percent = round((count/total)*100, digits = 2))
+      
+      highrisk_label_tcga <- paste0("Methylated: %",
+                                    pm_counts_tcga |> 
+                                      filter(riskLabel=="High" & `MGMT promoter status` == "Methylated") |> 
+                                      pull(percent),
+                                    "\n Unmethylated: %",
+                                    pm_counts_tcga |> 
+                                      filter(riskLabel=="High" & `MGMT promoter status` == "Unmethylated") |> 
+                                      pull(percent),
+                                    "\n Unknown: %",
+                                    pm_counts_tcga |> 
+                                      filter(riskLabel=="High" & `MGMT promoter status` == "unknown") |> 
+                                      pull(percent)
+      )
+      
+      lowrisk_label_tcga <- paste0("Methylated: %",
+                                   pm_counts_tcga |> 
+                                     filter(riskLabel=="Low" & `MGMT promoter status` == "Methylated") |> 
+                                     pull(percent),
+                                   "\n Unmethylated: %",
+                                   pm_counts_tcga |> 
+                                     filter(riskLabel=="Low" & `MGMT promoter status` == "Unmethylated") |> 
+                                     pull(percent),
+                                   "\n Unknown: %",
+                                   pm_counts_tcga |> 
+                                     filter(riskLabel=="Low" & `MGMT promoter status` == "unknown") |> 
+                                     pull(percent)
+      )
+    }
+    
+    return(list(high_risk = highrisk_label_tcga, low_risk = lowrisk_label_tcga, table=pm_counts_tcga))
+    
+  }
+```
+
+
+## Program model for IDH WT
+```{r, warning=FALSE, echo=F, results='hide'}
+program_model_tcga_idhwt <- program_model_tcga |>
+    filter(`IDH status` == "WT")
+  
+    # Create survival labels
+    survival_labels_idhwt <- survival_counts(input_df = program_model_tcga_idhwt, type = "IDH")
+    p1 <- survfit2(Surv(duration, observed) ~ riskLabel, data = program_model_tcga_idhwt) |>
+      ggsurvfit(linewidth = 1) +
+      add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+      add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+      add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+      scale_ggsurvfit() +
+      add_censor_mark(size = 4, alpha = 0.9) +
+      annotate(geom="table", label=list(survival_labels_idhwt$table), x=max(program_model_tcga_idhwt$duration), y=1) +
+      scale_color_manual(labels=c("High","Low"), values=c("#d73027","#4575b4")) +
+      add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+      labs(title="Program model: TCGA | IDH wt", x="Time (days)")
+    
+    p1
+    
+    # count total matches for IDH WT and Observed low risk
+tail_patients_all <- tcga_all |>
+  filter(IDHStatus == "WT" & observed_risk == "Low") |>
+  pull(Patient_ID)
+
+match_counts <- tail_patients_program |>
+  select(Patient_ID, observed_risk, correct_count_sygnal, correct_count_idhstatus) |>
+  group_by(correct_count_sygnal, correct_count_idhstatus) |>
+  summarise(count=n())
+    
+    pm_lowrisk_patients <- program_model_tcga_idhwt |>
+      filter(riskLabel == "Low") |>
+      pull(Patient_ID) |>
+      unique()
+    
+    cat("\nTotal # of tail patients in ALL TCGA: ", length(tail_patients_all))
+    cat("\nTotal # of Program Model LOW RISK patients: ", length(pm_lowrisk_patients))
+    cat("\nHow many of tail patients were Program Model LOW Risk: ", length(intersect(tail_patients_all, pm_lowrisk_patients)))
+    x = length(intersect(tail_patients_all, pm_lowrisk_patients))
+    m = length(tail_patients_all)
+    n = length(tcga_all |> pull(Patient_ID)) - m
+    k = length(pm_lowrisk_patients)
+    phyper(x,m,n,k, lower.tail = FALSE)
+    
+```
+
+## Programmatically test cutoffs
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+risk_cutoff <- function(cutoff){
+  tmp1 <- tcga_surv |>
+    left_join(tcga_subtypes, by=c("Patient_ID" = "Case_ID")) |>
+    mutate(WHO_CNS5_diagnosis = gsub(",", "\n", WHO_CNS5_diagnosis)) |>
+    mutate(WHO_CNS5_diagnosis = if_else(WHO_CNS5_diagnosis == "NA. Grade NA.", NA, WHO_CNS5_diagnosis)) |>
+    mutate(`IDH status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+    dplyr::rename("IDHStatus" = "IDH status") |>
+    dplyr::filter(IDHStatus != "unknown") |>
+    mutate(observed_risk = if_else(duration > cutoff, "Low", "High")) |>
+    arrange(duration)
+  
+     # count total matches for IDH WT and Observed low risk
+tail_patients_all <- tmp1 |>
+  filter(IDHStatus == "WT" & observed_risk == "Low") |>
+  pull(Patient_ID)
+
+match_counts <- tail_patients_program |>
+  select(Patient_ID, observed_risk, correct_count_sygnal, correct_count_idhstatus) |>
+  group_by(correct_count_sygnal, correct_count_idhstatus) |>
+  summarise(count=n())
+    
+pm_lowrisk_patients <- program_model_tcga_idhwt |>
+  filter(riskLabel == "Low") |>
+  pull(Patient_ID) |>
+  unique()
+
+cat("\nTotal # of tail patients in ALL TCGA: ", length(tail_patients_all))
+cat("\nTotal # of Program Model LOW RISK patients: ", length(pm_lowrisk_patients))
+cat("\nHow many of tail patients were Program Model LOW Risk: ", length(intersect(tail_patients_all, pm_lowrisk_patients)))
+x = length(intersect(tail_patients_all, pm_lowrisk_patients))
+m = length(tail_patients_all)
+n = length(tcga_all |> pull(Patient_ID)) - m
+k = length(pm_lowrisk_patients)
+
+hyper_pvalue <- signif(phyper(x,m,n,k, lower.tail = FALSE))
+
+res <- tibble(
+  cutoff = cutoff,
+  tail_patients= length(tail_patients_all),
+  model_lowrisk_patients = length(pm_lowrisk_patients),
+  overlap =  length(intersect(tail_patients_all, pm_lowrisk_patients)),
+  overlap_pvalue = round(hyper_pvalue, digits = 2))
+  
+return(res)
+}
+
+#datatable(res, caption="Overlap of high risk tail patients with low risk", filter = "top")
+```
+
+## Test different cutoffs
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+cutoff_output <- tibble()
+for(cutoff in seq(100, 3000, 100)){
+  tt <- risk_cutoff(cutoff)
+  cutoff_output <- bind_rows(cutoff_output, tt )
+}
+
+cutoff_output
+
+p <- ggplot(cutoff_output, aes(x=cutoff, y=overlap_pvalue))
+p + geom_bar(stat="identity") +
+  geom_hline(yintercept = 0.05)
+
+# create a color scale for pvalue labels
+colors <- ifelse(cutoff_output$overlap_pvalue < 0.05, "red","gray")
+
+tcga_raw_idh <- survfit2(Surv(duration, observed) ~ IDHStatus, data = tcga_all) |>
+  ggsurvfit(linewidth = 1) +
+  add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  annotate(geom="table", label=list(tcga_raw_counts), x=max(tcga_all$duration), y=1) +
+  scale_color_manual(labels=c("IDHmut","IDHwt","Unknown"), values=c("#4575b4","#d73027","#DDDDDD")) +
+  add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+  labs(title="TCGA | IDH Status", x="Time (days)") +
+  geom_rect(xmin=500, xmax=max(tcga_all$duration), ymin=0, ymax=0.5, fill=NA, color="green") +
+  geom_vline(data=cutoff_output, aes(xintercept=cutoff),color="gray", alpha=0.5) +
+  geom_text(data=cutoff_output, aes(x=cutoff, y=0.9, label=overlap_pvalue), color=colors, size=5, angle=90) 
+ 
+
+tcga_raw_idh
+
+```
+
+## Signifiance of overlap across the distribution
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+colors <- ifelse(cutoff_output$overlap_pvalue < 0.05, "red","gray")
+
+ # distribution of patient survival
+ pp1 <- ggplot(tcga_all, aes(x=duration, fill=duration))
+  pp1 +
+  geom_histogram(bins=100) +
+  geom_text(inherit.aes = F,data=cutoff_output, aes(x=cutoff, y=42, label=overlap_pvalue,color=colors), size=3, angle=90, vjust=1,hjust=0) +
+    lims(y=c(0,46)) +
+    scale_color_manual(labels=c("not significant","significant"), values=c("gray","red")) +
+    geom_vline(data=cutoff_output, aes(xintercept=cutoff),color="gray", alpha=0.5)
+ 
+
+```
+
+## Plotting the tail patients for xCures
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+xcures_surv <- read_csv(here("../XCures-SNO/data/Treatment_summary_ISB cohort_20221111_id (1).csv")) |>
+  select(`Specimen ID`, `Deceased?`, `Survival or censor days`) |>
+  dplyr::rename("Patient_ID" = 1, "observed" = 2, "duration" = 3) |>
+  unique()
+
+# plot IDH mutation status
+xcures_idh <- xcures_caris |>
+  #filter(Technology == "Exome") |>
+  dplyr::select(`Accession Number`, Biomarker, `Test Result`, Technology, Test) |>
+  filter(Biomarker %in% c("IDH1")) |>
+  filter(Technology %in% c("Exome"))|>
+  mutate(TestResult = if_else(`Test Result` %in% c(grep("^(W|w)ild",`Test Result`, value=TRUE, perl=TRUE)), "Wild Type", `Test Result`)) |>
+  unique()
+
+xcures_all <- xcures_idh |>
+  left_join(xcures_surv, by=c("Accession Number" = "Patient_ID")) |>
+  mutate(observed_risk = if_else(duration > 500, "Low", "High")) |>
+  dplyr::rename("Patient_ID" = "Accession Number") 
+
+datatable(xcures_all, caption = "xCures Patient Meta", filter = "top")
+
+xcures_raw_idh <- survfit2(Surv(duration, observed) ~ TestResult, data = xcures_all) |>
+  ggsurvfit(linewidth = 1) +
+  add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  #annotate(geom="table", label=list(tcga_raw_counts), x=max(tcga_all$duration), y=1) +
+  scale_color_manual(labels=c("Pathogenic Variant","Wild Type"), values=c("#4575b4","#d73027")) +
+  add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+  labs(title="xCures | IDH Status", x="Time (days)") +
+  geom_rect(xmin=500, xmax=max(xcures_all$duration), ymin=0, ymax=0.5, fill=NA, color="green")
+
+xcures_raw_idh
+```
+
+
+
+
+## Program model for IDH WT in xCures
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+#program_model_xcures_idhwt
+
+program_model_xcures <- program_model |>
+  filter(dataset == "xCures")
+
+program_model_xcures_idhwt <- program_model_xcures |>
+  filter(`Test Result` == "Wild Type")
+
+pm_counts_xcures <- program_model |>
+  filter(dataset=="xCures") |>
+  dplyr::select(Patient_ID, riskLabel,TestResult) |>
+  group_by(riskLabel,TestResult) |>
+  mutate(TestResult = case_when(TestResult == "Pathogenic Variant" ~ "IDHmut",
+                                TestResult == "Wild Type" ~ "IDHwt",
+                                TestResult == NA ~ "NA")) |>
+  summarise(count=n()) |>
+  ungroup() |>
+  group_by(riskLabel) |>
+  mutate(total = sum(count)) |>
+  mutate(percent = round((count/total)*100, digits = 2))  
+datatable(pm_counts_xcures, caption = "xCures Program Model Counts", filter = "top")
+
+    # Create survival labels
+    #survival_labels_xcures <- survival_counts(input_df = program_model_xcures, type = "IDH")
+    p1 <- survfit2(Surv(duration, observed) ~ riskLabel, data = program_model_xcures) |>
+      ggsurvfit(linewidth = 1) +
+      add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+      add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+      add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+      scale_ggsurvfit() +
+      add_censor_mark(size = 4, alpha = 0.9) +
+      annotate(geom="table", label=list(pm_counts_xcures), x=max(program_model_xcures$duration), y=1) +
+      scale_color_manual(labels=c("High","Low"), values=c("#d73027","#4575b4")) +
+      add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+      labs(title="Program model: xCures", x="Time (days)")
+    
+    p1
+    
+    # count total matches for IDH WT and Observed low risk
+tail_patients_all_xcures <- xcures_all |>
+  filter(`TestResult` == "Wild Type" & observed_risk == "Low") |>
+  pull(Patient_ID)
+
+# match_counts <- tail_patients_program |>
+#   select(Patient_ID, observed_risk, correct_count_sygnal, correct_count_idhstatus) |>
+#   group_by(correct_count_sygnal, correct_count_idhstatus) |>
+#   summarise(count=n())
+    
+    pm_lowrisk_patients_xcures <- program_model_xcures_idhwt |>
+      filter(riskLabel == "Low") |>
+      pull(Patient_ID) |>
+      unique()
+    
+    cat("\nTotal # of tail patients in ALL TCGA: ", length(tail_patients_all_xcures))
+    cat("\nTotal # of Program Model LOW RISK patients: ", length(pm_lowrisk_patients_xcures))
+    cat("\nHow many of tail patients were Program Model LOW Risk: ", length(intersect(tail_patients_all_xcures, pm_lowrisk_patients_xcures)))
+    x = length(intersect(tail_patients_all_xcures, pm_lowrisk_patients_xcures))
+    m = length(tail_patients_all_xcures)
+    n = length(tcga_all |> pull(Patient_ID)) - m
+    k = length(pm_lowrisk_patients_xcures)
+    phyper(x,m,n,k, lower.tail = FALSE)
+    
+```
+
+## Programmatically test cutoffs for xCures
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+risk_cutoff_xcures <- function(cutoff){
+  # tmp1 <- xcures_surv |>
+  #   left_join(tcga_subtypes, by=c("Patient_ID" = "Case_ID")) |>
+  #   mutate(WHO_CNS5_diagnosis = gsub(",", "\n", WHO_CNS5_diagnosis)) |>
+  #   mutate(WHO_CNS5_diagnosis = if_else(WHO_CNS5_diagnosis == "NA. Grade NA.", NA, WHO_CNS5_diagnosis)) |>
+  #   mutate(`IDH status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+  #   dplyr::rename("IDHStatus" = "IDH status") |>
+  #   dplyr::filter(IDHStatus != "unknown") |>
+  #   mutate(observed_risk = if_else(duration > cutoff, "Low", "High")) |>
+  #   arrange(duration)
+  
+     # count total matches for IDH WT and Observed low risk
+tail_patients_all_xcures <- xcures_all |>
+  mutate(observed_risk = if_else(duration > cutoff, "Low", "High")) |>
+  filter(`TestResult` == "Wild Type" & observed_risk == "Low") |>
+  pull(Patient_ID)
+
+# match_counts <- tail_patients_program |>
+#   select(Patient_ID, observed_risk, correct_count_sygnal, correct_count_idhstatus) |>
+#   group_by(correct_count_sygnal, correct_count_idhstatus) |>
+#   summarise(count=n())
+    
+    pm_lowrisk_patients_xcures <- program_model_xcures_idhwt |>
+      filter(riskLabel == "Low") |>
+      pull(Patient_ID) |>
+      unique()
+    
+    cat("\nTotal # of tail patients in ALL TCGA: ", length(tail_patients_all_xcures))
+    cat("\nTotal # of Program Model LOW RISK patients: ", length(pm_lowrisk_patients_xcures))
+    cat("\nHow many of tail patients were Program Model LOW Risk: ", length(intersect(tail_patients_all_xcures, pm_lowrisk_patients_xcures)))
+    x = length(intersect(tail_patients_all_xcures, pm_lowrisk_patients_xcures))
+    m = length(tail_patients_all_xcures)
+    n = length(tcga_all |> pull(Patient_ID)) - m
+    k = length(pm_lowrisk_patients_xcures)
+    phyper(x,m,n,k, lower.tail = FALSE)
+
+hyper_pvalue <- signif(phyper(x,m,n,k, lower.tail = FALSE))
+
+res <- tibble(
+  cutoff = cutoff,
+  tail_patients= length(tail_patients_all_xcures),
+  model_lowrisk_patients = length(pm_lowrisk_patients_xcures),
+  overlap =  length(intersect(tail_patients_all_xcures, pm_lowrisk_patients_xcures)),
+  overlap_pvalue = round(hyper_pvalue, digits = 2))
+  
+return(res)
+}
+#datatable(res, caption = "xCures Program Model Overlaps", filter = "top")
+```
+
+## Test different cutoffs for xCures
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+cutoff_output_xcures <- tibble()
+for(cutoff in seq(100, 3000, 100)){
+  tt <- risk_cutoff_xcures(cutoff)
+  cutoff_output_xcures <- bind_rows(cutoff_output_xcures, tt )
+}
+
+datatable(cutoff_output_xcures,caption = "Survival Time Cutoffs for assigning Low risk")
+
+p <- ggplot(cutoff_output_xcures, aes(x=cutoff, y=overlap_pvalue))
+p + geom_bar(stat="identity") +
+  geom_hline(yintercept = 0.05)
+
+xcures_raw_counts <- xcures_all |>
+    select(Patient_ID, `TestResult`) |>
+    group_by(`TestResult`) |>
+    #mutate(Test Result` = if_else(`IDHStatus` == "WT (maf)", "WT", `IDHStatus`)) |>
+    summarise(count=n()) |>
+    ungroup() |>
+    #group_by(`IDHStatus`) |>
+    mutate(total = sum(count)) |>
+    mutate(percent = round((count/total)*100, digits = 2))
+
+# xcures_all <- xcures_all |>
+#   dplyr::rename("TestResult2" = "Test Result")
+
+# create a color scale for pvalue labels
+colors <- ifelse(cutoff_output_xcures$overlap_pvalue < 0.05, "red","gray")
+
+xcures_raw_idh <- survfit2(Surv(duration, observed) ~ TestResult, data = xcures_all) |>
+  ggsurvfit(linewidth = 1) +
+  add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  annotate(geom="table", label=list(xcures_raw_counts), x=max(xcures_all$duration), y=0.25) +
+  scale_color_manual(labels=c("Pathogenic Variant","Wild Type"), values=c("#4575b4","#d73027")) +
+  add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+  labs(title="xCures| IDH Status", x="Time (days)") +
+  geom_rect(xmin=500, xmax=max(xcures_all$duration), ymin=0, ymax=0.5, fill=NA, color="green") +
+  geom_vline(data=cutoff_output, aes(xintercept=cutoff),color="gray", alpha=0.5) +
+  geom_text(data=cutoff_output, aes(x=cutoff, y=0.9, label=overlap_pvalue), color=colors, size=5, angle=90) 
+ 
+
+xcures_raw_idh
+
+```
+
+
+
+
+## TCGA Data for IDHwt and MGMT Methylation
+Only use IDH WT in TCGA data and look for stratification by using MGMT promoter methylation status
+```{r,echo=FALSE, results='hide'}
+tcga_idh_mgmt <- tcga_all |>
+  filter(IDHStatus == "WT") |>
+  filter(`MGMT promoter status` != "unknown") |>
+  dplyr::rename("MGMTPromoterStatus" = "MGMT promoter status")
+  
+datatable(tcga_idh_mgmt, caption="TCGA IDHwt and MGMT Promoter Status")
+
+counts1 <- tcga_idh_mgmt |>
+        dplyr::select(Patient_ID, MGMTPromoterStatus) |>
+        group_by(MGMTPromoterStatus) |>
+       # mutate(`MGMT promoter status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+        summarise(count=n()) |>
+        ungroup() |>
+        #group_by(MGMTPromoterStatus) |>
+        mutate(total = sum(count)) |>
+        mutate(percent = round((count/total)*100, digits = 2))
+
+datatable(counts1, caption = "TCGA IDHwt startified with MGMT Status")
+
+medians <- surv_median(survfit2(Surv(duration, observed) ~ MGMTPromoterStatus, data = tcga_idh_mgmt))
+
+p_tcga_idh_mgmt <- survfit2(Surv(duration, observed) ~ MGMTPromoterStatus, data = tcga_idh_mgmt) |>
+  ggsurvfit(linewidth = 1) +
+  #add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  #add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = c("#d73027","#4575b4","#333333"), linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  annotate(geom="table", label=list(counts1), x=max(tcga_idh_mgmt$duration), y=1) +
+  scale_color_manual(labels=c("Methylated","Unmethylated"), values=c("#4575b4","#d73027")) +
+  add_pvalue(location = "annotation", x = 750,y=0.75, hjust=0, size=5) +
+  geom_text(data=medians, aes(x=median, y=0, label=median),color=c("#d73027","#4575b4"), hjust=c(0,0)) +
+  labs(title="TCGA | IDHwt | MGMT Status", x="Time (days)") #+
+  #geom_rect(xmin=500, xmax=max(tcga_idh_mgmt$duration), ymin=0, ymax=0.5, fill=NA, color="green")
+
+print(p_tcga_idh_mgmt)
+
+```
+
+## Program model for TCGA IDH WT and MGMT Metylation
+Use Program model for only IDHwt and Stratify with MGMT Status
+```{r, warning=FALSE, echo=FALSE, results='hide'}
+program_model_tcga_idhwt_mgmt <- program_model_tcga |>
+  filter(`IDH status` == "WT") |>
+  filter(`MGMT promoter status` != "unknown") |>
+  dplyr::rename("MGMTPromoterStatus" = "MGMT promoter status") #|>
+ # mutate(observed_risk = if_else(duration > cutoff, "Low", "High"))
+
+counts2 <- program_model_tcga_idhwt_mgmt |>
+  dplyr::select(Patient_ID, MGMTPromoterStatus,riskLabel) |>
+  group_by(MGMTPromoterStatus,riskLabel) |>
+  # mutate(`MGMT promoter status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+  summarise(count=n()) |>
+  ungroup() |>
+  #group_by(MGMTPromoterStatus) |>
+  mutate(total = sum(count)) |>
+  mutate(percent = round((count/total)*100, digits = 2))
+
+datatable(counts2, caption = "Program Model: TCGA IDHwt startified with MGMT Status")
+
+medians <- surv_median(survfit2(Surv(duration, observed) ~ riskLabel, data = program_model_tcga_idhwt_mgmt))
+# Create survival labels
+#survival_labels_idhwt <- survival_counts(input_df = program_model_tcga_idhwt, type = "IDH")
+p_model_tcga_idh_mgmt <- survfit2(Surv(duration, observed) ~ riskLabel, data = program_model_tcga_idhwt_mgmt) |>
+  ggsurvfit(linewidth = 1) +
+  #add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  #add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = c("#d73027","#4575b4","#333333"), linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  annotate(geom="table", label=list(counts2), x=max(program_model_tcga_idhwt_mgmt$duration), y=1) +
+  scale_color_manual(labels=c("High","Low"), values=c("#d73027","#4575b4")) +
+  add_pvalue(location = "annotation", x = 1,y=0.75, hjust=0, size=5) +
+  geom_text(data=medians, aes(x=median, y=0, label=median),color=c("#d73027","#4575b4"), hjust=c(0,0)) +
+  labs(title="Program model: TCGA | IDH wt | MGMT Methylation", x="Time (days)")
+
+p_model_tcga_idh_mgmt
+ 
+ # pdf(file=here("output/TCGA_IDHwt_MGMT_KM.pdf"), width = 11, height=5)
+ #  p_tcga <- p_model_tcga_idh_mgmt + p_tcga_idh_mgmt
+ #  print(p_tcga)
+ #  dev.off()
+ # p_model_tcga_idh_mgmt
+ # p_tcga_idh_mgmt
+    
+```
+
+## TCGA IDHwt MGMT Methylated stratified by Program model
+```{r}
+tcga_idhwt_mgmtMet <- tcga_idh_mgmt |>
+  #dplyr::rename("MGMTPromoterStatus" = "MGMT promoter status") |>
+  filter(MGMTPromoterStatus == "Methylated")
+tcga_idhwt_mgmtMet
+
+# get program modle data for the methylated patients
+tcga_program_model_metylated <- program_model_tcga |>
+  filter(Patient_ID %in% tcga_idhwt_mgmtMet$Patient_ID)
+tcga_program_model_metylated
+
+medians <- surv_median(survfit2(Surv(duration, observed) ~ riskLabel, data = tcga_program_model_metylated))
+
+p_tcga_program_model_metylated <- survfit2(Surv(duration, observed) ~ riskLabel, data = tcga_program_model_metylated) |>
+  ggsurvfit(linewidth = 1) +
+  #add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  #add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = c("#d73027","#4575b4","#333333"), linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  #annotate(geom="table", label=list(counts2), x=max(program_model_tcga_idhwt_mgmt$duration), y=1) +
+  scale_color_manual(labels=c("High","Low"), values=c("#d73027","#4575b4")) +
+  geom_text(data=medians, aes(x=median, y=0, label=median),color=c("#d73027","#4575b4"), hjust=c(0,0)) +
+  add_pvalue(location = "annotation", x = 1,y=0.75, hjust=0, size=5) +
+  labs(title="Program model: TCGA | IDH wt | MGMT Methylated", x="Time (days)")
+p_tcga_program_model_metylated
+
+```
+## TCGA IDHwt MGMT UnMethylated stratified by Program model
+```{r}
+tcga_idhwt_mgmtUnMet <- tcga_idh_mgmt |>
+  #dplyr::rename("MGMTPromoterStatus" = "MGMT promoter status") |>
+  filter(MGMTPromoterStatus == "Unmethylated")
+tcga_idhwt_mgmtUnMet
+
+# get program modle data for the methylated patients
+tcga_program_model_unmetylated <- program_model_tcga |>
+  filter(Patient_ID %in% tcga_idhwt_mgmtUnMet$Patient_ID)
+tcga_program_model_unmetylated
+
+medians <- surv_median(survfit2(Surv(duration, observed) ~ riskLabel, data = tcga_program_model_unmetylated))
+
+p_tcga_program_model_unmetylated <- survfit2(Surv(duration, observed) ~ riskLabel, data = tcga_program_model_unmetylated) |>
+  ggsurvfit(linewidth = 1) +
+  #add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  #add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = c("#d73027","#4575b4","#333333"), linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  #annotate(geom="table", label=list(counts2), x=max(program_model_tcga_idhwt_mgmt$duration), y=1) +
+  scale_color_manual(labels=c("High","Low"), values=c("#d73027","#4575b4")) +
+  geom_text(data=medians, aes(x=median, y=0, label=median),color=c("#d73027","#4575b4"), hjust=c(0,0)) +
+  add_pvalue(location = "annotation", x = 1,y=0.75, hjust=0, size=5) +
+  labs(title="Program model: TCGA | IDH wt | MGMT UnMethylated", x="Time (days)")
+p_tcga_program_model_unmetylated
+
+```
+
+## Cutoffs
+```{r, echo=FALSE, results='hide'}
+cutoff_output1 <- tibble()
+for(cutoff in seq(100, 3000, 100)){
+    # count total matches for IDH WT- MGMT Unmethylated and Observed low risk
+tail_patients_idhwt_mgmt<- tcga_all |>
+  mutate(observed_risk = if_else(duration > cutoff, "Low", "High"))|>
+  filter(IDHStatus == "WT") |>
+  filter(`MGMT promoter status` != "unknown") |>
+  dplyr::rename("MGMTPromoterStatus" = "MGMT promoter status") |>
+  filter(MGMTPromoterStatus == "Unmethylated" & observed_risk == "Low") |>
+  pull(Patient_ID)
+
+# Get the predicted low risk patients in program model for IDHWt
+pm_lowrisk_patients_idhwt_mgmt <- program_model_tcga_idhwt_mgmt |>
+  filter(riskLabel == "Low") |>
+  pull(Patient_ID) |>
+  unique()
+
+cat("\nTotal # of tail patients in ALL TCGA: ", length(tail_patients_idhwt_mgmt))
+cat("\nTotal # of Program Model LOW RISK patients: ", length(pm_lowrisk_patients_idhwt_mgmt))
+cat("\nHow many of tail patients were Program Model LOW Risk: ", length(intersect(tail_patients_idhwt_mgmt, pm_lowrisk_patients_idhwt_mgmt)))
+x = length(intersect(tail_patients_idhwt_mgmt, pm_lowrisk_patients_idhwt_mgmt))
+m = length(tail_patients_idhwt_mgmt)
+n = length(tcga_idh_mgmt |> pull(Patient_ID)) - m
+k = length(pm_lowrisk_patients_idhwt_mgmt)
+phyper(x,m,n,k, lower.tail = FALSE)
+
+hyper_pvalue <- signif(phyper(x,m,n,k, lower.tail = FALSE))
+
+res <- tibble(
+  cutoff = cutoff,
+  tail_patients= length(tail_patients_idhwt_mgmt),
+  model_lowrisk_patients = length(pm_lowrisk_patients_idhwt_mgmt),
+  overlap =  length(intersect(tail_patients_idhwt_mgmt, pm_lowrisk_patients_idhwt_mgmt)),
+  overlap_pvalue = round(hyper_pvalue, digits = 2))
+  
+  cutoff_output1<- bind_rows(cutoff_output1, res)
+}
+
+cutoff_output1
+
+p <- ggplot(cutoff_output1, aes(x=cutoff, y=overlap_pvalue))
+p + geom_bar(stat="identity") +
+  geom_hline(yintercept = 0.05)
+```
+
+## XCures IDH wt vs MGMT Methylation
+xCures data IDHwt only separated by MGMT Status
+```{r, include=FALSE}
+xcures_surv <- read_csv(here("../XCures-SNO/data/Treatment_summary_ISB cohort_20221111_id (1).csv")) |>
+  select(`Specimen ID`, `Deceased?`, `Survival or censor days`) |>
+  dplyr::rename("Patient_ID" = 1, "observed" = 2, "duration" = 3) |>
+  unique()
+
+# plot IDH mutation status
+xcures_idh <- xcures_caris |>
+  #filter(Technology == "Exome") |>
+  dplyr::select(`Accession Number`, Biomarker, `Test Result`, Technology) |>
+  filter(Biomarker %in% c("IDH1")) |>
+  filter(Technology %in% c("NGS Q3","Exome"))|>
+  mutate(TestResult = if_else(`Test Result` %in% c(grep("^(W|w)ild",`Test Result`, value=TRUE, perl=TRUE)), "Wild Type", `Test Result`)) |>
+  unique() |>
+  select("Accession Number", `Test Result`) |>
+  dplyr::rename("TestResult_IDH" = "Test Result")
+
+xcures_mgmt <- xcures_caris |>
+  dplyr::select(`Accession Number`, Biomarker, Test,`Test Result`, Technology) |>
+  filter(Biomarker %in% c("MGMT")) |>
+  filter(Test == "MGMT-Me") |>
+  unique() |>
+  select("Accession Number", `Test Result`) |>
+  dplyr::rename("TestResult_MGMT" = "Test Result")
+
+xcures_all <- xcures_surv |>
+  left_join(xcures_idh, by=c("Patient_ID" = "Accession Number")) |>
+  left_join(xcures_mgmt, by=c("Patient_ID" = "Accession Number"))
+
+```
+
+```{r, echo=FALSE, results='hide'}
+xcures_idhwt <- xcures_all |>
+  filter(TestResult_IDH %in% c("Wild Type"))
+
+xcures_idhwt_mgmt <- xcures_idhwt |>
+  filter(TestResult_MGMT %in% c("Hypermethylated", "Not Methylated"))
+
+counts3 <- xcures_idhwt_mgmt |>
+  select(Patient_ID, TestResult_MGMT) |>
+  group_by(TestResult_MGMT) |>
+  # mutate(`MGMT promoter status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+  summarise(count=n()) |>
+  ungroup() |>
+  #group_by(MGMTPromoterStatus) |>
+  mutate(total = sum(count)) |>
+  mutate(percent = round((count/total)*100, digits = 2))
+
+datatable(counts3, caption = "xCures IDHwt startified with MGMT Status")
+
+p_xcures_raw_idh <- survfit2(Surv(duration, observed) ~ TestResult_MGMT, data = xcures_idhwt_mgmt) |>
+  ggsurvfit(linewidth = 1) +
+  add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  annotate(geom="table", label=list(counts3), x=max(xcures_idhwt_mgmt$duration), y=1) +
+  scale_color_manual(labels=c("Hypermetylated","Not Methylated"), values=c("#4575b4","#d73027")) +
+  #add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+  labs(title="xCures | IDH WT | MGMT Status", x="Time (days)") #+
+  #geom_rect(xmin=500, xmax=max(xcures_idhwt_mgmt$duration), ymin=0, ymax=0.5, fill=NA, color="green")
+
+p_xcures_raw_idh
+
+```
+
+# Program model xCures
+xCures Program model only for IDHwt staratified with MGMT Status
+```{r, echo=FALSE, results='hide'}
+program_model_xcures_idhwt_mgmt <- program_model_xcures_idhwt |>
+  filter(TestResult_MGMT %in% c("Hypermethylated", "Not Methylated"))
+
+counts4 <- program_model_xcures_idhwt_mgmt |>
+  select(Patient_ID, TestResult_MGMT, riskLabel) |>
+  group_by(TestResult_MGMT, riskLabel) |>
+  # mutate(`MGMT promoter status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+  summarise(count=n()) |>
+  ungroup() |>
+  #group_by(MGMTPromoterStatus) |>
+  mutate(total = sum(count)) |>
+  mutate(percent = round((count/total)*100, digits = 2))
+
+datatable(counts4, caption = "Program Model: xCures IDHwt startified with MGMT Status")
+
+# Create survival labels
+#survival_labels_idhwt <- survival_counts(input_df = program_model_tcga_idhwt, type = "IDH")
+p_model_xcures_idh_mgmt <- survfit2(Surv(duration, observed) ~ riskLabel, data = program_model_xcures_idhwt_mgmt) |>
+  ggsurvfit(linewidth = 1) +
+  add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  annotate(geom="table", label=list(counts4), x=max(program_model_xcures_idhwt_mgmt$duration), y=1) +
+  scale_color_manual(labels=c("High","Low"), values=c("#d73027","#4575b4")) +
+  add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+  labs(title="Program model: xCures | IDH wt | MGMT Methylation", x="Time (days)")
+
+p_model_xcures_idh_mgmt
+
+pdf(file=here("output/xCures_IDHwt_MGMT_KM.pdf"), width = 11, height=5)
+  p_xcures <- p_model_xcures_idh_mgmt + p_xcures_raw_idh
+  print(p_xcures)
+  dev.off()
+  p_model_xcures_idh_mgmt
+  p_xcures_raw_idh
+```
+
+## xCures IDHwt MGMT Methylated stratified by Program model
+```{r, echo=FALSE, results='hide'}
+xcures_idhwt <- xcures_all |>
+  filter(TestResult_IDH %in% c("Wild Type"))
+
+xcures_idhwt_mgmt <- xcures_idhwt |>
+  filter(TestResult_MGMT %in% c("Hypermethylated", "Not Methylated"))
+
+xcures_idhwt_mgmtMet <- xcures_idhwt_mgmt |>
+  filter(TestResult_MGMT %in% c("Hypermethylated"))
+
+# counts3 <- xcures_idhwt_mgmt |>
+#   select(Patient_ID, TestResult_MGMT) |>
+#   group_by(TestResult_MGMT) |>
+#   # mutate(`MGMT promoter status` = if_else(`IDH status` == "WT (maf)", "WT", `IDH status`)) |>
+#   summarise(count=n()) |>
+#   ungroup() |>
+#   #group_by(MGMTPromoterStatus) |>
+#   mutate(total = sum(count)) |>
+#   mutate(percent = round((count/total)*100, digits = 2))
+# 
+# datatable(counts3, caption = "xCures IDHwt startified with MGMT Status")
+
+# get program modle data for the methylated patients
+xcures_program_model_metylated <- program_model_xcures |>
+  filter(Patient_ID %in% tcga_idhwt_mgmtMet$Patient_ID)
+tcga_program_model_metylated
+
+p_tcga_program_model_metylated <- survfit2(Surv(duration, observed) ~ riskLabel, data = tcga_program_model_metylated) |>
+  ggsurvfit(linewidth = 1) +
+  add_risktable(risktable_stats= "{n.risk} ({cum.event})",risktable_group='risktable_stats') +
+  add_risktable_strata_symbol(symbol = "\U25CF", size = 10) +
+  add_quantile(y_value = 0.5, color = "gray50", linewidth = 0.75) +
+  scale_ggsurvfit() +
+  add_censor_mark(size = 4, alpha = 0.9) +
+  #annotate(geom="table", label=list(counts2), x=max(program_model_tcga_idhwt_mgmt$duration), y=1) +
+  scale_color_manual(labels=c("High","Low"), values=c("#d73027","#4575b4")) +
+  #add_pvalue(location = "annotation", x = 1,y=0, hjust=0, size=5) +
+  labs(title="Program model: TCGA | IDH wt | MGMT Methylated", x="Time (days)")
+p_tcga_program_model_metylated
+
+```

@@ -1,0 +1,83 @@
+Patient_ID,observed,duration,TestResult_IDH,TestResult_MGMT
+TN22-148723,FALSE,586,Wild Type,Hypermethylated
+TN22-121263,TRUE,539,Wild Type,Not Methylated
+TN21-189721,TRUE,524,Wild Type,Not Methylated
+TN21-182476,TRUE,1110,Wild Type,Not Methylated
+TL-20-E2D448,TRUE,574,NA,NA
+TN22-108875,FALSE,352,Wild Type,Hypermethylated
+TN22-125589,TRUE,391,Wild Type,Hypermethylated
+P95708,FALSE,109,NA,NA
+TN21-166345,FALSE,578,Pathogenic Variant,Not Methylated
+TN21-166723,TRUE,468,Wild Type,Hypermethylated
+TN21-155144,TRUE,402,Wild Type,NA
+TN21-156267,TRUE,524,Wild Type,Not Methylated
+TN21-150776,FALSE,203,Wild Type,Not Methylated
+TN21-181658,TRUE,321,Wild Type,Not Methylated
+TN21-144166,TRUE,315,Wild Type,Hypermethylated
+TN21-149348,TRUE,527,Wild Type,Not Methylated
+TN21-152658,FALSE,591,Wild Type,Not Methylated
+TN21-138453,TRUE,669,Wild Type,Not Methylated
+TN21-155227,TRUE,456,Wild Type,Not Methylated
+TN21-139096,FALSE,417,Wild Type,Hypermethylated
+TN21-138542,TRUE,526,Wild Type,Not Methylated
+TN21-130862,TRUE,539,Wild Type,Not Methylated
+TN21-127263,TRUE,301,Wild Type,Not Methylated
+TL-21-3FD45C,TRUE,741,NA,NA
+TN21-167647,FALSE,293,Wild Type,Not Methylated
+TN21-112214,FALSE,381,Pathogenic Variant,Hypermethylated
+TN21-106658,FALSE,203,Wild Type,Hypermethylated
+TN21-134908,FALSE,813,Wild Type,Hypermethylated
+TN20-166920,FALSE,827,Pathogenic Variant,Hypermethylated
+TN21-166620,TRUE,384,Wild Type,Not Methylated
+TN20-162861,TRUE,405,Wild Type,Not Methylated
+TN20-166034,TRUE,319,Wild Type,Not Methylated
+TN20-163087,FALSE,712,Wild Type,Hypermethylated
+TN20-162782,FALSE,111,Pathogenic Variant,Hypermethylated
+TN20-154989,TRUE,595,Wild Type,Not Methylated
+TN20-168368,TRUE,1406,Wild Type,Hypermethylated
+TN20-158030,TRUE,402,Wild Type,Not Methylated
+TN20-156469,TRUE,411,Wild Type,Not Methylated
+TN21-163378,TRUE,460,Wild Type,Not Methylated
+TN20-165751,FALSE,311,Wild Type,Equivocal
+TN20-152211,TRUE,190,Pathogenic Variant,Not Methylated
+TN20-153845,TRUE,574,Wild Type,Equivocal
+TL-20-920D6D,TRUE,566,NA,NA
+P76156_6,FALSE,602,NA,NA
+TN20-163107,FALSE,604,Wild Type,Not Methylated
+TN21-148942,TRUE,738,Wild Type,Not Methylated
+TN20-136944,FALSE,381,Pathogenic Variant,Not Methylated
+TN20-140547,TRUE,408,Wild Type,Not Methylated
+TN20-133602,TRUE,623,Wild Type,Not Methylated
+TN20-133879,TRUE,271,Wild Type,Not Methylated
+TL-20-24CC77,TRUE,427,NA,NA
+TN20-152003,TRUE,803,Wild Type,Hypermethylated
+TN20-131427,TRUE,375,Wild Type,Not Methylated
+TL-20-495B84,TRUE,434,NA,NA
+TN20-128226,FALSE,368,Wild Type,Not Methylated
+TN20-117587,TRUE,650,Wild Type,Not Methylated
+TN21-119776,TRUE,662,Wild Type,Not Methylated
+TL-20-0B6792,TRUE,384,NA,NA
+TN20-106435,TRUE,367,Wild Type,Hypermethylated
+TN20-103884,TRUE,387,Wild Type,Not Methylated
+TN20-103822,TRUE,1628,Wild Type,Hypermethylated
+TN19-150010,TRUE,244,Wild Type,Not Methylated
+TL-20-C7EDD0,TRUE,120,NA,NA
+TL-19-87E3E1,TRUE,423,NA,NA
+TN21-134911,TRUE,890,Wild Type,Hypermethylated
+TN19-154563,TRUE,879,Wild Type,Hypermethylated
+TN20-132068,FALSE,1343,Wild Type,Hypermethylated
+TL-19-61DB85,TRUE,681,NA,NA
+TN19-154522,TRUE,474,Wild Type,Not Methylated
+TN19-150632,FALSE,1249,Wild Type,Hypermethylated
+TN19-137335,TRUE,506,Wild Type,Not Methylated
+TN19-138433,TRUE,492,Wild Type,Not Methylated
+TN19-129615,TRUE,1628,Wild Type,Hypermethylated
+TN19-127268,FALSE,1343,Wild Type,Hypermethylated
+TN19-133323,TRUE,375,Wild Type,Not Methylated
+TL-19-0B9A1B,TRUE,437,NA,NA
+TN19-136612,TRUE,384,Wild Type,Not Methylated
+TN19-138457,TRUE,1406,Wild Type,Hypermethylated
+TN19-126611,TRUE,1254,Wild Type,Hypermethylated
+TL-18-31DCF0,TRUE,861,NA,NA
+TN19-109873,FALSE,1542,Wild Type,Equivocal
+TL-21-HSPA2BVS,FALSE,738,NA,NA
